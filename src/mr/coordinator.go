@@ -1,15 +1,42 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"strings"
+	"sync"
 )
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
+type TaskStatus int
+type TaskType int
+
+const (
+	Ready TaskStatus = iota
+	InProgress
+	Completed
+)
+
+const (
+	Map TaskType = iota
+	Reduce
+)
+
+type Task struct {
+	TaskFile    string
+	Status      TaskStatus
+	WorkerId    string
+	OutputFiles map[int]string // reduce task bucket number -> output file
+	TaskType    TaskType
+}
+
 type Coordinator struct {
+	Tasks             []Task
+	Mutex             sync.Mutex
+	ReduceBucketCount int
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
@@ -54,7 +81,16 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	// Your code here.
+	c.ReduceBucketCount = nReduce
+
+	for _, file := range files {
+		fmt.Println("Adding task", file)
+		c.Tasks = append(c.Tasks, Task{
+			TaskFile: file,
+			Status:   Ready,
+			TaskType: Map,
+		})
+	}
 
 	c.server()
 	return &c

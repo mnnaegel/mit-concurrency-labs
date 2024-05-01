@@ -3,7 +3,6 @@ package mr
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 )
 import "net"
@@ -37,17 +36,25 @@ type Coordinator struct {
 	Tasks             []Task
 	Mutex             sync.Mutex
 	ReduceBucketCount int
+	ReadyToReduce     bool
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	// get all files with suffix .txt and return the first file
-	var files []string
-	for _, file := range os.Args {
-		if strings.HasSuffix(file, ".txt") {
-			files = append(files, file)
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	var readyTask *Task
+	for i, task := range c.Tasks {
+		if task.Status == Ready && (c.ReadyToReduce || task.TaskType == Map) {
+			readyTask = &c.Tasks[i]
+			break
 		}
 	}
-	reply.TaskFile = files[0]
+
+	readyTask.Status = InProgress
+	readyTask.WorkerId = args.WorkerId
+
+	reply.TaskFile = readyTask.TaskFile
 	return nil
 }
 
@@ -75,13 +82,11 @@ func (c *Coordinator) Done() bool {
 	return ret
 }
 
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.ReduceBucketCount = nReduce
+	c.ReadyToReduce = false // should be defaulted to false, but this is performed in case it isn't
 
 	for _, file := range files {
 		fmt.Println("Adding task", file)

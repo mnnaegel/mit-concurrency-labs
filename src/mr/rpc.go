@@ -4,6 +4,7 @@ import "os"
 import "strconv"
 
 type GetTaskArgs struct {
+	WorkerId string
 }
 
 type GetTaskReply struct {

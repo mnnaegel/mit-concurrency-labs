@@ -1,6 +1,10 @@
 package mr
 
-import "fmt"
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -19,17 +23,34 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+type WorkerState struct {
+	WorkerId string
+}
+
+var workerState WorkerState
+
+func init() {
+	workerState.WorkerId = newWorkerId()
+}
+
+func newWorkerId() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return base64.URLEncoding.EncodeToString(b)
+}
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	// Your worker implementation here.
 
-	// uncomment to send the Example RPC to the coordinator.
 	CallGetTask()
 }
 
 func CallGetTask() {
-	args := GetTaskArgs{}
+	args := GetTaskArgs{WorkerId: workerState.WorkerId}
 	reply := GetTaskReply{}
 	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {

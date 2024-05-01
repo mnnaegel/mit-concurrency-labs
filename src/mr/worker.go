@@ -3,12 +3,12 @@ package mr
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 )
 import "log"
 import "time"
@@ -87,43 +87,43 @@ func Worker(mapf func(string, string) []KeyValue,
 	sort.Sort(ByKey(intermediateKvpArray))
 
 	// create 10 temporary files with os.CreateTemp
-	tempBuckets := make([]*os.File, 10)
+	temporaryIntermediateFiles := make([]*os.File, 10)
 	for i := 0; i < 10; i++ {
-		tempBuckets[i], err = os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+workerState.WorkerId+"-"+fileToProcess)
+		temporaryIntermediateFiles[i], err = os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+workerState.WorkerId+"-"+fileToProcess)
 		if err != nil {
 			log.Fatalf("cannot create temp file")
 		}
 	}
 
-	// create groups of intermediate key value pairs for each reduce task based on the key
-	currentGroup := make([]KeyValue, 0)
-	bucketsData := make([]strings.Builder, 10)
+	// bucket the kvps
+	bucketsData := make([][]KeyValue, 10)
 	i := 0
 	for i < len(intermediateKvpArray) {
 		j := i + 1
 		for j < len(intermediateKvpArray) && intermediateKvpArray[j].Key == intermediateKvpArray[i].Key {
 			j++
 		}
-		currentGroup = append(currentGroup, intermediateKvpArray[i:j]...)
-
-		// get all kvps into one string
-		var groupData strings.Builder
-		for _, kvp := range currentGroup {
-			groupData.WriteString(fmt.Sprintf("%v %v\n", kvp.Key, kvp.Value))
-		}
-		bucketsData[ihash(intermediateKvpArray[i].Key)%10].WriteString(groupData.String())
+		bucketNumber := ihash(intermediateKvpArray[i].Key) % 10
+		bucketsData[bucketNumber] = append(bucketsData[bucketNumber], intermediateKvpArray[i:j]...)
 		i = j
 	}
 
+	fmt.Println("Finished grouping KVPs into buckets: ", time.Since(startTime))
+
 	// write to temp files
 	for i, tempFileContents := range bucketsData {
-		_, err := tempBuckets[i].WriteString(tempFileContents.String())
+		// write to temp file json of kvps
+		enc := json.NewEncoder(temporaryIntermediateFiles[i])
+		err := enc.Encode(&tempFileContents)
 		if err != nil {
-			log.Fatalf("cannot write to temp file")
+			log.Fatalf("cannot encode json")
 		}
+		temporaryIntermediateFiles[i].Close()
 	}
 
-	for i, tempFile := range tempBuckets {
+	fmt.Println("Finished writing temp files: ", time.Since(startTime))
+
+	for i, tempFile := range temporaryIntermediateFiles {
 		err := os.Rename(tempFile.Name(), currentDir+"/mr-out-"+fileToProcess+"-"+strconv.Itoa(i))
 		if err != nil {
 			log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)

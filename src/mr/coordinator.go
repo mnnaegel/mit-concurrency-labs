@@ -51,6 +51,11 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 	}
 
+	if readyTask == nil {
+		reply.TaskFile = ""
+		return nil
+	}
+
 	readyTask.Status = InProgress
 	readyTask.WorkerId = args.WorkerId
 

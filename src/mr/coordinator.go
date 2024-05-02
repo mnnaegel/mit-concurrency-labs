@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/gob"
 	"fmt"
 	"log"
 	"sync"
@@ -10,56 +11,89 @@ import "os"
 import "net/rpc"
 import "net/http"
 
-type TaskStatus int
-type TaskType int
+type JobStatus int
+type JobsType int
 
 const (
-	Ready TaskStatus = iota
+	Ready JobStatus = iota
+	WaitingForMap
 	InProgress
 	Completed
 )
 
 const (
-	Map TaskType = iota
+	Map JobsType = iota
 	Reduce
 )
 
-type Task struct {
-	TaskFile    string
-	Status      TaskStatus
-	WorkerId    string
-	OutputFiles map[int]string // reduce task bucket number -> output file
-	TaskType    TaskType
+type Job struct {
+	BucketNumber int
+	JobFile      string
+	WorkerId     string
+	Status       JobStatus
+	JobsType     JobsType
 }
 
 type Coordinator struct {
-	Tasks             []Task
+	Jobs              []Job
 	Mutex             sync.Mutex
 	ReduceBucketCount int
-	ReadyToReduce     bool
+}
+
+func init() {
+	gob.Register(MapTaskReply{})
+	gob.Register(ReduceTaskReply{})
+	gob.Register(ExitTaskReply{})
+	gob.Register(WaitTaskReply{})
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	var readyTask *Task
-	for i, task := range c.Tasks {
-		if task.Status == Ready && (c.ReadyToReduce || task.TaskType == Map) {
-			readyTask = &c.Tasks[i]
+	// if all tasks are completed, tell the worker to exit
+	var allCompleted = true
+	for _, task := range c.Jobs {
+		if task.Status != Completed {
+			allCompleted = false
+			break
+		}
+	}
+	if allCompleted {
+		reply.TaskReply = ExitTaskReply{}
+		return nil
+	}
+
+	var readyJob *Job
+	for i, task := range c.Jobs {
+		if task.Status == Ready {
+			readyJob = &c.Jobs[i]
 			break
 		}
 	}
 
-	if readyTask == nil {
-		reply.TaskFile = ""
+	// if no tasks to assign, make the worker wait
+	if readyJob == nil {
+		reply.TaskReply = WaitTaskReply{}
 		return nil
 	}
 
-	readyTask.Status = InProgress
-	readyTask.WorkerId = args.WorkerId
+	readyJob.WorkerId = args.WorkerId
+	readyJob.Status = InProgress
 
-	reply.TaskFile = readyTask.TaskFile
+	// switch for the readyJob's reflected type
+	switch readyJob.JobsType {
+	case Map:
+		reply.TaskReply = MapTaskReply{
+			JobFile:     readyJob.JobFile,
+			BucketCount: c.ReduceBucketCount,
+		}
+	case Reduce:
+		reply.TaskReply = ReduceTaskReply{
+			BucketNumber: readyJob.BucketNumber,
+		}
+	}
+
 	return nil
 }
 
@@ -82,8 +116,6 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
-	// Your code here.
-
 	return ret
 }
 
@@ -91,14 +123,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.ReduceBucketCount = nReduce
-	c.ReadyToReduce = false // should be defaulted to false, but this is performed in case it isn't
 
 	for _, file := range files {
 		fmt.Println("Adding task", file)
-		c.Tasks = append(c.Tasks, Task{
-			TaskFile: file,
+		c.Jobs = append(c.Jobs, Job{
+			JobFile:  file,
 			Status:   Ready,
-			TaskType: Map,
+			JobsType: Map,
 		})
 	}
 

@@ -9,9 +9,9 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 )
 import "log"
-import "time"
 import "net/rpc"
 import "hash/fnv"
 
@@ -21,7 +21,7 @@ type KeyValue struct {
 	Value string
 }
 
-// use ihash(key) % NReduce to choose the reduce
+// use ihash(key) % BucketCount to choose the reduce
 // task number for each KeyValue emitted by Map.
 func ihash(key string) int {
 	h := fnv.New32a()
@@ -70,49 +70,43 @@ func getFileContents(filename string) string {
 	return string(contents)
 }
 
-// main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
-	startTime := time.Now()
+func handleMapTask(mapf func(string, string) []KeyValue, reply MapTaskReply) {
 	currentDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("cannot get current directory")
 	}
-	fileToProcess := CallGetTask()
+
+	fileToProcess := reply.JobFile
+	bucketsToCreate := reply.BucketCount
 
 	contents := getFileContents(fileToProcess)
 	intermediateKvpArray := mapf(fileToProcess, contents)
-
-	// sort by keys
 	sort.Sort(ByKey(intermediateKvpArray))
 
-	// create 10 temporary files with os.CreateTemp
-	temporaryIntermediateFiles := make([]*os.File, 10)
-	for i := 0; i < 10; i++ {
+	// Create the temporary files to store results of the map phase
+	temporaryIntermediateFiles := make([]*os.File, bucketsToCreate)
+	for i := 0; i < len(temporaryIntermediateFiles); i++ {
 		temporaryIntermediateFiles[i], err = os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+workerState.WorkerId+"-"+fileToProcess)
 		if err != nil {
 			log.Fatalf("cannot create temp file")
 		}
 	}
 
-	// bucket the kvps
-	bucketsData := make([][]KeyValue, 10)
+	// Put KVPs into respective buckets based on hash of the key
+	bucketsData := make([][]KeyValue, bucketsToCreate)
 	i := 0
 	for i < len(intermediateKvpArray) {
 		j := i + 1
 		for j < len(intermediateKvpArray) && intermediateKvpArray[j].Key == intermediateKvpArray[i].Key {
 			j++
 		}
-		bucketNumber := ihash(intermediateKvpArray[i].Key) % 10
+		bucketNumber := ihash(intermediateKvpArray[i].Key) % bucketsToCreate
 		bucketsData[bucketNumber] = append(bucketsData[bucketNumber], intermediateKvpArray[i:j]...)
 		i = j
 	}
 
-	fmt.Println("Finished grouping KVPs into buckets: ", time.Since(startTime))
-
-	// write to temp files
+	// Write JSON intermediate KVPs to temp files
 	for i, tempFileContents := range bucketsData {
-		// write to temp file json of kvps
 		enc := json.NewEncoder(temporaryIntermediateFiles[i])
 		err := enc.Encode(&tempFileContents)
 		if err != nil {
@@ -121,29 +115,72 @@ func Worker(mapf func(string, string) []KeyValue,
 		temporaryIntermediateFiles[i].Close()
 	}
 
-	fmt.Println("Finished writing temp files: ", time.Since(startTime))
-
+	// Atomic rename temp files to final files
 	for i, tempFile := range temporaryIntermediateFiles {
 		err := os.Rename(tempFile.Name(), currentDir+"/mr-out-"+fileToProcess+"-"+strconv.Itoa(i))
 		if err != nil {
 			log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)
 		}
 	}
-
-	fmt.Println("Total time: ", time.Since(startTime))
 }
 
-func CallGetTask() string {
+func handleExitTask() {
+	os.Exit(0)
+}
+
+func handleWaitTask() {
+	time.Sleep(time.Second)
+}
+
+func handleReduceTask(reducef func(string, []string) string, reply ReduceTaskReply) {
+	panic("Not implemented reduce handler yet")
+}
+
+// main/mrworker.go calls this function.
+func Worker(mapf func(string, string) []KeyValue,
+	reducef func(string, []string) string) {
+	for {
+		assignedTask := CallGetTask()
+
+		switch assignedTask.(type) {
+		case MapTaskReply:
+			fmt.Println("Map task assigned")
+			handleMapTask(mapf, assignedTask.(MapTaskReply))
+			fmt.Println("Map task completed")
+		case ReduceTaskReply:
+			fmt.Println("Reduce task assigned")
+			handleReduceTask(reducef, assignedTask.(ReduceTaskReply))
+			fmt.Println("Reduce task completed")
+		case ExitTaskReply:
+			fmt.Println("Exit task assigned")
+			handleExitTask()
+		case WaitTaskReply:
+			fmt.Println("Wait task assigned")
+			handleWaitTask()
+		}
+	}
+}
+
+func CallGetTask() TaskReply {
 	args := GetTaskArgs{WorkerId: workerState.WorkerId}
 	reply := GetTaskReply{}
 	ok := call("Coordinator.GetTask", &args, &reply)
-	if ok {
-		fmt.Printf("reply.TaskFile %v\n", reply.TaskFile)
-	} else {
-		fmt.Printf("call failed!\n")
+	if !ok {
+		panic("Failed to get task")
 	}
 
-	return reply.TaskFile
+	switch reply.TaskReply.(type) {
+	case MapTaskReply:
+		return reply.TaskReply.(MapTaskReply)
+	case ReduceTaskReply:
+		return reply.TaskReply.(ReduceTaskReply)
+	case ExitTaskReply:
+		return reply.TaskReply.(ExitTaskReply)
+	case WaitTaskReply:
+		return reply.TaskReply.(WaitTaskReply)
+	default:
+		panic("Unknown task type")
+	}
 }
 
 // send an RPC request to the coordinator, wait for the response.

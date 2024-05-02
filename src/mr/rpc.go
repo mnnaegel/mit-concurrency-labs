@@ -7,8 +7,27 @@ type GetTaskArgs struct {
 	WorkerId string
 }
 
+type TaskReply interface{}
+
+type MapTaskReply struct {
+	JobFile     string
+	BucketCount int
+}
+
+type ReduceTaskReply struct {
+	BucketNumber int
+}
+
+// ExitTaskReply when the coordinator has finished the entire job, tells the worker to exit
+type ExitTaskReply struct {
+}
+
+// WaitTaskReply when there are no tasks to be done
+type WaitTaskReply struct {
+}
+
 type GetTaskReply struct {
-	TaskFile string
+	TaskReply
 }
 
 // Cook up a unique-ish UNIX-domain socket name

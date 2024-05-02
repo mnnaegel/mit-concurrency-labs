@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/gob"
 	"fmt"
 	"log"
@@ -27,6 +29,7 @@ const (
 )
 
 type Job struct {
+	Id           string
 	BucketNumber int
 	JobFile      string
 	WorkerId     string
@@ -87,10 +90,53 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		reply.TaskReply = MapTaskReply{
 			JobFile:     readyJob.JobFile,
 			BucketCount: c.ReduceBucketCount,
+			JobId:       readyJob.Id,
 		}
 	case Reduce:
 		reply.TaskReply = ReduceTaskReply{
 			BucketNumber: readyJob.BucketNumber,
+			JobFile:      readyJob.JobFile,
+			JobId:        readyJob.Id,
+		}
+	}
+
+	return nil
+}
+
+func (c *Coordinator) JobFinish(args *JobFinishArgs, reply *JobFinishReply) error {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	for i, job := range c.Jobs {
+		if job.Id == args.JobId {
+			// if the recently completed job is a map job and all map jobs are now complete, mark reduce jobs as ready
+			if job.Status == Completed {
+				break
+			}
+
+			if job.JobsType == Map {
+				var allMapJobsCompleted = true
+				for _, mapJob := range c.Jobs {
+					if mapJob.Id == job.Id {
+						continue
+					}
+
+					if mapJob.JobsType == Map && mapJob.Status != Completed {
+						allMapJobsCompleted = false
+						break
+					}
+				}
+
+				if allMapJobsCompleted {
+					for j, reduceJob := range c.Jobs {
+						if reduceJob.JobsType == Reduce && reduceJob.Status == WaitingForMap {
+							c.Jobs[j].Status = Ready
+						}
+					}
+				}
+			}
+			c.Jobs[i].Status = Completed
+			break
 		}
 	}
 
@@ -111,12 +157,30 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
+func newJobId() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return base64.URLEncoding.EncodeToString(b)
+}
+
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 
-	return ret
+	allCompleted := true
+	for _, task := range c.Jobs {
+		if task.Status != Completed {
+			allCompleted = false
+			break
+		}
+	}
+
+	return allCompleted
 }
 
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
@@ -125,11 +189,22 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.ReduceBucketCount = nReduce
 
 	for _, file := range files {
-		fmt.Println("Adding task", file)
+		fmt.Println("Adding map job for ", file)
 		c.Jobs = append(c.Jobs, Job{
+			Id:       newJobId(),
 			JobFile:  file,
 			Status:   Ready,
 			JobsType: Map,
+		})
+	}
+
+	for bucket := 0; bucket < nReduce; bucket++ {
+		fmt.Println("Adding reduce job for bucket ", bucket)
+		c.Jobs = append(c.Jobs, Job{
+			Id:           newJobId(),
+			BucketNumber: bucket,
+			Status:       WaitingForMap,
+			JobsType:     Reduce,
 		})
 	}
 

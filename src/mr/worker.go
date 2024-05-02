@@ -144,13 +144,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		switch assignedTask.(type) {
 		case MapTaskReply:
-			fmt.Println("Map task assigned")
+			fmt.Println("Map task assigned, file: ", assignedTask.(MapTaskReply).JobFile)
 			handleMapTask(mapf, assignedTask.(MapTaskReply))
 			fmt.Println("Map task completed")
+			CallJobFinish(assignedTask.(MapTaskReply).JobId)
 		case ReduceTaskReply:
-			fmt.Println("Reduce task assigned")
+			fmt.Println("Reduce task assigned, bucket: ", assignedTask.(ReduceTaskReply).BucketNumber)
 			handleReduceTask(reducef, assignedTask.(ReduceTaskReply))
 			fmt.Println("Reduce task completed")
+			CallJobFinish(assignedTask.(ReduceTaskReply).JobId)
 		case ExitTaskReply:
 			fmt.Println("Exit task assigned")
 			handleExitTask()
@@ -158,6 +160,15 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("Wait task assigned")
 			handleWaitTask()
 		}
+	}
+}
+
+func CallJobFinish(jobId string) {
+	args := JobFinishArgs{JobId: jobId}
+	reply := JobFinishReply{}
+	ok := call("Coordinator.JobFinish", &args, &reply)
+	if !ok {
+		panic("Failed to finish job")
 	}
 }
 

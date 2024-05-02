@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -35,6 +36,7 @@ type Job struct {
 	WorkerId     string
 	Status       JobStatus
 	JobsType     JobsType
+	StartTime    time.Time
 }
 
 type Coordinator struct {
@@ -83,6 +85,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 
 	readyJob.WorkerId = args.WorkerId
 	readyJob.Status = InProgress
+	readyJob.StartTime = time.Now()
 
 	// switch for the readyJob's reflected type
 	switch readyJob.JobsType {
@@ -182,13 +185,31 @@ func (c *Coordinator) Done() bool {
 	return allCompleted
 }
 
+func (c *Coordinator) CleanLongRunningTasks() {
+	clean := func() {
+		c.Mutex.Lock()
+		defer c.Mutex.Unlock()
+
+		for i, task := range c.Jobs {
+			if task.Status == InProgress && time.Since(task.StartTime).Seconds() > 10 {
+				c.Jobs[i].Status = Ready
+			}
+		}
+	}
+
+	for {
+		clean()
+		time.Sleep(time.Second)
+	}
+}
+
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.ReduceBucketCount = nReduce
 
+	fmt.Println("Coordinator: Adding map jobs")
 	for _, file := range files {
-		fmt.Println("Adding map job for ", file)
 		c.Jobs = append(c.Jobs, Job{
 			Id:       newJobId(),
 			JobFile:  file,
@@ -197,8 +218,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
+	fmt.Println("Coordinator: Adding reduce jobs")
 	for bucket := 0; bucket < nReduce; bucket++ {
-		fmt.Println("Adding reduce job for bucket ", bucket)
 		c.Jobs = append(c.Jobs, Job{
 			Id:           newJobId(),
 			BucketNumber: bucket,
@@ -207,6 +228,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
+	go c.CleanLongRunningTasks()
 	c.server()
 	return &c
 }

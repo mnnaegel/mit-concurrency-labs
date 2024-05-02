@@ -18,7 +18,6 @@ type MapTaskReply struct {
 type ReduceTaskReply struct {
 	BucketNumber int
 	JobId        string
-	JobFile      string
 }
 
 // ExitTaskReply when the coordinator has finished the entire job, tells the worker to exit

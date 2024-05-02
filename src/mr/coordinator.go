@@ -95,7 +95,6 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	case Reduce:
 		reply.TaskReply = ReduceTaskReply{
 			BucketNumber: readyJob.BucketNumber,
-			JobFile:      readyJob.JobFile,
 			JobId:        readyJob.Id,
 		}
 	}

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 import "log"
@@ -117,7 +119,14 @@ func handleMapTask(mapf func(string, string) []KeyValue, reply MapTaskReply) {
 
 	// Atomic rename temp files to final files
 	for i, tempFile := range temporaryIntermediateFiles {
-		err := os.Rename(tempFile.Name(), currentDir+"/mr-out-"+fileToProcess+"-"+strconv.Itoa(i))
+		// Create the directory if it doesn't already exist
+		finalFileDir := filepath.Dir(filepath.Join(currentDir, "intermediate", fileToProcess, strconv.Itoa(i)))
+		err := os.MkdirAll(finalFileDir, 0755)
+		if err != nil {
+			log.Fatalf("cannot create intermediate directory")
+		}
+
+		err = os.Rename(tempFile.Name(), currentDir+"/intermediate/"+fileToProcess+"/"+strconv.Itoa(i))
 		if err != nil {
 			log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)
 		}
@@ -133,7 +142,73 @@ func handleWaitTask() {
 }
 
 func handleReduceTask(reducef func(string, []string) string, reply ReduceTaskReply) {
-	panic("Not implemented reduce handler yet")
+	intermediateKvps := make([]KeyValue, 0)
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("cannot get current directory")
+	}
+
+	intermediateDir := filepath.Join(currentDir, "intermediate")
+	desiredFile := strconv.Itoa(reply.BucketNumber)
+	err = filepath.Walk(intermediateDir, func(path string, info os.FileInfo, err error) error {
+		if !info.IsDir() && strings.HasSuffix(path, desiredFile) {
+			fmt.Println("Reading KVPs from intermediate file: ", path)
+			file, err := os.Open(path)
+			if err != nil {
+				log.Fatalf("cannot open %v", path)
+			}
+
+			dec := json.NewDecoder(file)
+			for {
+				var kvps []KeyValue
+				if err := dec.Decode(&kvps); err != nil {
+					break
+				}
+				intermediateKvps = append(intermediateKvps, kvps...)
+			}
+
+			file.Close()
+		}
+		return nil
+	})
+
+	// sort the intermediate kvps
+	sort.Sort(ByKey(intermediateKvps))
+
+	// create a temporary file to store the reduce output
+	tempFile, err := os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+strconv.Itoa(reply.BucketNumber))
+	if err != nil {
+		log.Fatalf("cannot create temp file")
+	}
+
+	// call Reduce on each distinct key in intermediate[], and print the result to temp file
+	i := 0
+	for i < len(intermediateKvps) {
+		j := i + 1
+		for j < len(intermediateKvps) && intermediateKvps[j].Key == intermediateKvps[i].Key {
+			j++
+		}
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, intermediateKvps[k].Value)
+		}
+		output := reducef(intermediateKvps[i].Key, values)
+		fmt.Fprintf(tempFile, "%v %v\n", intermediateKvps[i].Key, output)
+		i = j
+	}
+
+	tempFile.Close()
+
+	fmt.Println("Writing temporary reduce output to file: ", tempFile.Name())
+
+	// Atomic rename temp file to final file
+	err = os.Rename(tempFile.Name(), currentDir+"/mr-out-"+strconv.Itoa(reply.BucketNumber))
+	if err != nil {
+		log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)
+	}
+
+	fmt.Println("Reduce output written to file: ", currentDir+"/mr-out-"+strconv.Itoa(reply.BucketNumber))
 }
 
 // main/mrworker.go calls this function.

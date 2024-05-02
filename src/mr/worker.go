@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -75,7 +76,7 @@ func getFileContents(filename string) string {
 func handleMapTask(mapf func(string, string) []KeyValue, reply MapTaskReply) {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("cannot get current directory")
+		log.Fatalf("cannot get current directory, error: %v", err)
 	}
 
 	fileToProcess := reply.JobFile
@@ -85,12 +86,23 @@ func handleMapTask(mapf func(string, string) []KeyValue, reply MapTaskReply) {
 	intermediateKvpArray := mapf(fileToProcess, contents)
 	sort.Sort(ByKey(intermediateKvpArray))
 
+	// create tmp directory if it doesn't exist
+	tmpDir := filepath.Join(currentDir, "tmp")
+	err = os.MkdirAll(tmpDir, 0755)
+	if err != nil {
+		log.Fatalf("cannot create tmp directory, error: %v", err)
+	}
+
 	// Create the temporary files to store results of the map phase
 	temporaryIntermediateFiles := make([]*os.File, bucketsToCreate)
+	fmt.Println("Sanity check... first key and value: ", intermediateKvpArray[0].Key, intermediateKvpArray[0].Value)
 	for i := 0; i < len(temporaryIntermediateFiles); i++ {
-		temporaryIntermediateFiles[i], err = os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+workerState.WorkerId+"-"+fileToProcess)
+		newFile, err := os.CreateTemp(tmpDir, "mr-tmp-*")
+		// print file path
+		fmt.Println("Temp file created: ", newFile.Name())
+		temporaryIntermediateFiles[i] = newFile
 		if err != nil {
-			log.Fatalf("cannot create temp file")
+			log.Fatalf("cannot create temp file, error: %v", err)
 		}
 	}
 
@@ -120,13 +132,18 @@ func handleMapTask(mapf func(string, string) []KeyValue, reply MapTaskReply) {
 	// Atomic rename temp files to final files
 	for i, tempFile := range temporaryIntermediateFiles {
 		// Create the directory if it doesn't already exist
-		finalFileDir := filepath.Dir(filepath.Join(currentDir, "intermediate", fileToProcess, strconv.Itoa(i)))
+		// filetoprocess can be in format ../filename.txt just get the final file name
+		fileName := filepath.Base(fileToProcess)
+		finalFilePath := filepath.Join(currentDir, "intermediate", fileName, strconv.Itoa(i))
+		finalFileDir := filepath.Dir(finalFilePath)
+		fmt.Println("Final file path: ", finalFilePath)
+		fmt.Println("Final file dir: ", finalFileDir)
 		err := os.MkdirAll(finalFileDir, 0755)
 		if err != nil {
-			log.Fatalf("cannot create intermediate directory")
+			log.Fatalf("cannot create intermediate directory, error: %v", err)
 		}
 
-		err = os.Rename(tempFile.Name(), currentDir+"/intermediate/"+fileToProcess+"/"+strconv.Itoa(i))
+		err = os.Rename(tempFile.Name(), finalFilePath)
 		if err != nil {
 			log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)
 		}
@@ -142,18 +159,28 @@ func handleWaitTask() {
 }
 
 func handleReduceTask(reducef func(string, []string) string, reply ReduceTaskReply) {
+	homeDir, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("cannot get current directory, error: %v", err)
+	}
+
 	intermediateKvps := make([]KeyValue, 0)
 
-	currentDir, err := os.Getwd()
+	currentDir := homeDir
+
+	// create intermediate directory if it doesn't exist
+	err = os.MkdirAll(filepath.Join(currentDir, "intermediate"), 0755)
 	if err != nil {
-		log.Fatalf("cannot get current directory")
+		log.Fatalf("cannot create intermediate directory, error: %v", err)
 	}
 
 	intermediateDir := filepath.Join(currentDir, "intermediate")
 	desiredFile := strconv.Itoa(reply.BucketNumber)
 	err = filepath.Walk(intermediateDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Fatalf("cannot walk %v, error: %v", path, err)
+		}
 		if !info.IsDir() && strings.HasSuffix(path, desiredFile) {
-			fmt.Println("Reading KVPs from intermediate file: ", path)
 			file, err := os.Open(path)
 			if err != nil {
 				log.Fatalf("cannot open %v", path)
@@ -176,8 +203,9 @@ func handleReduceTask(reducef func(string, []string) string, reply ReduceTaskRep
 	// sort the intermediate kvps
 	sort.Sort(ByKey(intermediateKvps))
 
+	tmpDir := filepath.Join(currentDir, "tmp")
 	// create a temporary file to store the reduce output
-	tempFile, err := os.CreateTemp(currentDir+"/tmp", "mr-tmp-"+strconv.Itoa(reply.BucketNumber))
+	tempFile, err := os.CreateTemp(tmpDir, "mr-out-*")
 	if err != nil {
 		log.Fatalf("cannot create temp file")
 	}
@@ -200,12 +228,15 @@ func handleReduceTask(reducef func(string, []string) string, reply ReduceTaskRep
 
 	tempFile.Close()
 
-	fmt.Println("Writing temporary reduce output to file: ", tempFile.Name())
-
 	// Atomic rename temp file to final file
 	err = os.Rename(tempFile.Name(), currentDir+"/mr-out-"+strconv.Itoa(reply.BucketNumber))
 	if err != nil {
 		log.Fatalf("Failed renaming temp file %v, error: %v", tempFile.Name(), err)
+	}
+
+	err = os.Chmod(currentDir+"/mr-out-"+strconv.Itoa(reply.BucketNumber), 0644)
+	if err != nil {
+		log.Fatalf("Failed to change file permissions, error: %v", err)
 	}
 
 	fmt.Println("Reduce output written to file: ", currentDir+"/mr-out-"+strconv.Itoa(reply.BucketNumber))
@@ -221,12 +252,10 @@ func Worker(mapf func(string, string) []KeyValue,
 		case MapTaskReply:
 			fmt.Println("Map task assigned, file: ", assignedTask.(MapTaskReply).JobFile)
 			handleMapTask(mapf, assignedTask.(MapTaskReply))
-			fmt.Println("Map task completed")
 			CallJobFinish(assignedTask.(MapTaskReply).JobId)
 		case ReduceTaskReply:
 			fmt.Println("Reduce task assigned, bucket: ", assignedTask.(ReduceTaskReply).BucketNumber)
 			handleReduceTask(reducef, assignedTask.(ReduceTaskReply))
-			fmt.Println("Reduce task completed")
 			CallJobFinish(assignedTask.(ReduceTaskReply).JobId)
 		case ExitTaskReply:
 			fmt.Println("Exit task assigned")
@@ -274,6 +303,8 @@ func CallGetTask() TaskReply {
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
@@ -281,11 +312,15 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
-	err = c.Call(rpcname, args, reply)
-	if err == nil {
+	// Make the RPC call with the context
+	callch := c.Go(rpcname, args, reply, nil)
+	select {
+	case <-ctx.Done():
+		return false
+	case <-callch.Done:
+		if callch.Error != nil {
+			return false
+		}
 		return true
 	}
-
-	fmt.Println(err)
-	return false
 }

@@ -4,7 +4,6 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
@@ -24,33 +23,31 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.server.Call("KVServer.Get", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
+	args := GetArgs{
+		key,
+	}
+	reply := GetReply{}
 
-	// You will have to modify this function.
-	return ""
+	ok := ck.server.Call("KVServer.Get", &args, &reply)
+	if !ok {
+		panic("Server call failed")
+	}
+	return reply.Value
 }
 
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.server.Call("KVServer."+op, &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
-	// You will have to modify this function.
-	return ""
+	args := PutAppendArgs{
+		key,
+		value,
+	}
+	reply := PutAppendReply{}
+
+	ok := ck.server.Call("KVServer."+op, &args, &reply)
+	if !ok {
+		panic("RPC to the server failed for PutAppend")
+	}
+	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {

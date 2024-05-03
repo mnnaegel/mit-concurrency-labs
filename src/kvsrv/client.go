@@ -42,7 +42,6 @@ func (ck *Clerk) Get(key string) string {
 		ok = ck.server.Call("KVServer.Get", &args, &reply)
 	}
 
-	ck.successfulCallCount++
 	return reply.Value
 }
 
